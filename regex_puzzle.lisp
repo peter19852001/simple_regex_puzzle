@@ -25,24 +25,27 @@
 (defun pr-cell (c) (format t "~A " (cell-char c)))
 (defun pr-indent (n)
   (dotimes (i n) (format t " ")))
-(defun pr-board (b)
-  (dotimes (i 7)
-    (pr-indent (- 6 i))
-    (dotimes (j (+ 7 i))
-      (pr-cell (aref b i j)))
-    (terpri))
-  (dotimes (i 6)
-    (pr-indent (1+ i))
-    (dotimes (j (- 12 i))
-      (pr-cell (aref b (+ i 7) j)))
-    (terpri)))
-
-(defparameter *string-buffer* (make-string 13 :initial-element #\_))
 (defun row-start (i) (if (> i 6) (- i 6) 0))
 (defun row-end (i) (if (< i 6) (+ i 7) 13)) ; end is exclusive
 (defun col-start (i) (if (> i 6) (- i 6) 0))
 (defun col-end (i) (if (< i 6) (+ i 7) 13)) ; end is exclusive
 (defun diag-of (i j) (+ 6 (- j i)))
+(defun diag-i (di) (if (> di 6) (- 18 di) 12))
+(defun diag-j (di) (if (< di 6) (+ di 6)  12))
+(defun pr-board (b)
+  (dotimes (i 13)
+    (pr-indent (abs (- 6 i)))
+    (loop for j from (row-start i) below (row-end i) do
+	 (pr-cell (aref b i j)))
+    (terpri)))
+(defun copy-board (board)
+  (let ((b (empty-board)))
+    (dotimes (i 13)
+      (dotimes (j 13)
+	(setf (aref b i j) (aref board i j))))
+    b))
+
+(defparameter *string-buffer* (make-string 13 :initial-element #\_))
 (defun get-str-at-row (board i &optional (out-str *string-buffer*))
   "Get the string at row i of the board, and put at out-str, and return the length."
   (let ((s (row-start i))
@@ -50,7 +53,7 @@
     (do ((k 0 (1+ k))
 	 (ci s (1+ ci)))
 	((>= ci e) (- e s))
-      (setf (char *string-buffer* k) (board-char board i ci)))))
+      (setf (char out-str k) (board-char board i ci)))))
 (defun get-str-at-col (board j &optional (out-str *string-buffer*))
   "Get the string at column j of the board, and put at out-str, and return the length."
   (let ((s (col-start j))
@@ -58,14 +61,14 @@
     (do ((k 0 (1+ k))
 	 (ci s (1+ ci)))
 	((>= ci e) (- e s))
-      (setf (char *string-buffer* k) (board-char board ci j)))))
+      (setf (char out-str k) (board-char board ci j)))))
 (defun get-str-at-diag (board di &optional (out-str *string-buffer*))
   "Get the string at diagonal di of the board, and put at out-str, and return the length."
   (do ((k 0 (1+ k))
-       (i (if (> di 6) (- 18 di) 12) (1- i))
-       (j (if (< di 6) (+ di 6)  12) (1- j)))
+       (i (diag-i di) (1- i))
+       (j (diag-j di) (1- j)))
       ((or (< i 0) (< j 0)) k)
-    (setf (char *string-buffer* k) (board-char board i j))))
+    (setf (char out-str k) (board-char board i j))))
 ;;; The constraints for rows, columns and diagonals. Order is important.
 ;;; Each constraint is a function of a string and length, that should return
 ;;; true if portion of the string satisfies the constraints, and returns false otherwise.
@@ -157,14 +160,14 @@ Does NOT work for backreferences."
    (regex "^[^C]*[^R]*III.*$")
    (special-handler "^(...?)\\1*$" #'two-three-rep-L12) ;;;
    (regex "^([^X]|XCC)*$")
-   (regex "^(RR|HHH).*.?$")
+   (regex "^(RR|HHH)*.?$")
    (regex "^N.*X.X.X.*E$")
    (regex "^R*D*M*$")
    (regex "^.(C|HH)*$")))
 (defparameter *col-constraints*
   (vector
    (regex "^(ND|ET|IN)[^X]*$")
-   (regex "^[CHMNOR]*I[CHMNOR]$")
+   (regex "^[CHMNOR]*I[CHMNOR]*$")
    (special-handler "^P+(..)\\1.*$" #'p-two-rep) ;;;
    (regex "^(E|CR|MN)*$")
    (regex "^([^MC]|MM|CC)*$")
@@ -175,7 +178,7 @@ Does NOT work for backreferences."
    (regex "^([^EMC]|EM)*$")
    (regex "^.*OXR.*$")
    (regex "^.*LR.*RL.*$")
-   (regex "^.*SU.*UE.*$")))
+   (regex "^.*SE.*UE.*$")))
 (defparameter *diag-constraints*
   (vector
    (regex "^.*G.*V.*H.*$")
@@ -206,6 +209,82 @@ Does NOT work for backreferences."
     (if (not (validate-row board i)) (return nil))
     (if (not (validate-col board i)) (return nil))
     (if (not (validate-diag board i)) (return nil))))
-;;;;
 
+(defun validate-cell (board i j)
+  (and (validate-row board i) (validate-col board j) (validate-diag board (diag-of i j))))
+(defun can-put-at-cell (board i j x)
+  "Try to put character x at cell (i . j). If ok, returns true. Otherwise returns false.
+In either case, the cell (i . j) will be changed back to its original value."
+  (let ((old (aref board i j)))
+    (setf (aref board i j) x)
+    (let ((r (validate-cell board i j)))
+      (setf (aref board i j) old)
+      r)))
+(defun cell-possibilities (board i j poss)
+  (let ((r '()))
+    (dolist (c poss)
+      (if (can-put-at-cell board i j c)
+	  (push c r)))
+    r))
 ;;;;
+;;; config: a board together with an order of the cells to try.
+;;; Each cell is named by (i . j) pair, for row i and column j in the board.
+;;; The order is maintained as a vector of list. Slot i stores the list of cells
+;;;   which have i possibilities in the board.
+(defun make-cell (i j) (cons i j))
+(defun cell-i (c) (car c))
+(defun cell-j (c) (cdr c))
+(defun cell-ordering (board)
+  (let ((v (make-array 27 :initial-element nil)))
+    (dotimes (i 13)
+      (loop for j from (row-start i) below (row-end i) do
+	   (let ((c (aref board i j)))
+	     (if (listp c)
+		 (push (make-cell i j) (aref v (length c)))))))
+    v))
+(defun make-config (board)
+  (cons board (cell-ordering board)))
+(defun config-board (cfg) (car cfg))
+(defun next-cell-to-try (cfg)
+  "Return the next cell to try. Return nil if there is no next move.
+The config itself is not updated."
+  (let ((ordering (cdr cfg)))
+    (dotimes (i (length ordering) nil)
+      (let ((ls (aref ordering i)))
+	(if ls (return (car ls)))))))
+
+(defun propagate-cell (board i j x)
+  "Assuming can place x at cell (i . j), copy the board, and place x at cell (i . j), and propagate the constraints to other cells in the same row, column and diagonal.
+In the process of propagating, if contradiction is found, returns nil. If other cells are reduced to one possibility, they will be also placed and propagated. Return the new board."
+  (let ((b (copy-board board))
+	(cells-to-update (list (make-cell i j)))
+	(failed nil))
+    (setf (aref b i j) x)
+    (labels ((update-cell-possibilities (u v)
+	       (let ((c (aref b u v)))
+		 (when (listp c)
+		   (let ((nc (cell-possibilities b u v c)))
+		     (cond ((null nc) (setf failed t))
+			   ((null (cdr nc))
+			    (push (make-cell u v) cells-to-update)
+			    (setf (aref b u v) (car nc)))
+			   (t (setf (aref b u v) nc))))))))
+      (loop
+	 (if failed (return nil))
+	 (if (null cells-to-update) (return b))
+	 (let* ((cell (pop cells-to-update))
+		(u (cell-i cell))
+		(v (cell-j cell)))
+	   (loop for k from (row-start u) below (row-end u) never failed do (update-cell-possibilities u k)) ;; row
+	   (if failed (return nil))
+	   (loop for k from (col-start v) below (col-end v) never failed do (update-cell-possibilities k v)) ;; column
+	   (if failed (return nil))
+	   ;; diagonal
+	   (do ((du (diag-i (diag-of u v)) (1- du))
+		(dv (diag-j (diag-of u v)) (1- dv)))
+	       ((or (< du 0) (< dv 0) failed))
+	     (update-cell-possibilities du dv))
+	   (if failed (return nil)))))))
+;;;; Not yet implemented the backtracking, but now can already obtain the full board
+;;;;   by constraint propagation when given the cell (0 . 0) to be N,
+;;;;   but when given only (0 . 2) is P, 5 cells would still be unfilled.
