@@ -245,21 +245,22 @@ In either case, the cell (i . j) will be changed back to its original value."
 (defun make-config (board)
   (cons board (cell-ordering board)))
 (defun config-board (cfg) (car cfg))
-(defun next-cell-to-try (cfg)
+(defun pr-config (cfg)
+  (if cfg
+      (pr-board (config-board cfg))
+      (print "No possible configs.")))
+(defun pop-next-cell-to-try! (cfg)
   "Return the next cell to try. Return nil if there is no next move.
-The config itself is not updated."
+The config itself is updated."
   (let ((ordering (cdr cfg)))
     (dotimes (i (length ordering) nil)
       (let ((ls (aref ordering i)))
-	(if ls (return (car ls)))))))
+	(if ls (return (pop (aref ordering i))))))))
 
-(defun propagate-cell (board i j x)
-  "Assuming can place x at cell (i . j), copy the board, and place x at cell (i . j), and propagate the constraints to other cells in the same row, column and diagonal.
-In the process of propagating, if contradiction is found, returns nil. If other cells are reduced to one possibility, they will be also placed and propagated. Return the new board."
-  (let ((b (copy-board board))
-	(cells-to-update (list (make-cell i j)))
-	(failed nil))
-    (setf (aref b i j) x)
+(defun propagate-cells! (b cells-to-update)
+  "For the cells in the list cells-to-update, assume their values are determined, propagate the constraints to other cells in the same row, column and diagonal.
+In the process of propagating, if contradiction is found, returns nil. If other cells are reduced to one possibility, they will be also placed and propagated. Return the modified board."
+  (let ((failed nil))
     (labels ((update-cell-possibilities (u v)
 	       (let ((c (aref b u v)))
 		 (when (listp c)
@@ -285,6 +286,62 @@ In the process of propagating, if contradiction is found, returns nil. If other 
 	       ((or (< du 0) (< dv 0) failed))
 	     (update-cell-possibilities du dv))
 	   (if failed (return nil)))))))
+
+(defun propagate-cell (board i j x)
+  "Assuming can place x at cell (i . j), copy the board, and place x at cell (i . j), and propagate the constraints to other cells in the same row, column and diagonal.
+In the process of propagating, if contradiction is found, returns nil. If other cells are reduced to one possibility, they will be also placed and propagated. Return the new board."
+  (and (can-put-at-cell board i j x)
+       (let ((b (copy-board board)))
+	 (setf (aref b i j) x)
+	 (propagate-cells! b (list (make-cell i j))))))
+
 ;;;; Not yet implemented the backtracking, but now can already obtain the full board
 ;;;;   by constraint propagation when given the cell (0 . 0) to be N,
 ;;;;   but when given only (0 . 2) is P, 5 cells would still be unfilled.
+(defun initial-config (board)
+  "Need only cause each cell to be checked at least once. Returns the config of the new board if ok. Otherwise returns nil."
+  (let ((b (copy-board board))
+	(cells-to-check '()))
+    (dotimes (i 13)
+      (push (make-cell i (row-start i)) cells-to-check))
+    (let ((nb (propagate-cells! b cells-to-check)))
+      (if nb (make-config nb) nil))))
+
+;;;;
+(defun puzzle-dfs (cfg)
+  "Use quite naive Depth First Search to solve the puzzle. But since the constraint propagation does a good job, so this search need not be very clever.
+Returns a solved board it OK. Returns nil otherwise."
+  (if (null cfg)
+      nil
+      (let ((move (pop-next-cell-to-try! cfg))
+	    (board (config-board cfg)))
+	(cond (move (let ((poss (aref board (cell-i move) (cell-j move))))
+		      (cond ((null poss) nil)
+			    ((characterp poss) (puzzle-dfs cfg))
+			    (t (dolist (c poss nil)
+				 (let* ((nb (propagate-cell board (cell-i move) (cell-j move) c))
+					(nc (if nb (puzzle-dfs (make-config nb)) nil)))
+				   (if nc (return nc))))))))
+	      ((validate-board board) board)
+	      (t nil)))))
+;;;;;
+
+(defparameter *test-c* (initial-config (empty-board)))
+(defparameter *test-c1* (puzzle-dfs *test-c*))
+(if *test-c1* (pr-board *test-c1*) (print "No configs."))
+;;; One possible board configuration, in fact it should be the only possible one.
+;;;
+;;;       N H P E H A S 
+;;;      D I O M O M T H 
+;;;     F O X N X A X P H 
+;;;    M M O M M M M R H H 
+;;;   M C X N M M C R X E M 
+;;;  C M C C C C M M M M M M 
+;;; H R X R C M I I I H X L S 
+;;;  O R E O R E O R E O R E 
+;;;   V C X C C H H M X C C 
+;;;    R R R R H H H R R U 
+;;;     N C X D X E X L E 
+;;;      R R D D M M M M 
+;;;       G C C H H C C 
+;;;;;
